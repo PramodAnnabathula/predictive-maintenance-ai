@@ -2,30 +2,23 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 /* ---------------------------------------------------------
-   SECURITY: Helmet — sets secure HTTP headers
-   (X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
-    Strict-Transport-Security, CSP, and more)
-   Also removes X-Powered-By automatically.
+   SECURITY: Helmet
 ---------------------------------------------------------- */
 app.use(helmet());
-
-/* ---------------------------------------------------------
-   SECURITY: Disable X-Powered-By explicitly as a fallback
-   (helmet already does this, belt-and-suspenders)
----------------------------------------------------------- */
 app.disable("x-powered-by");
 
 /* ---------------------------------------------------------
-   SECURITY: CORS — restrict to allowed origin(s) only
-   Reads CORS_ORIGIN from env; defaults to localhost:5173
-   in development. Set to your real domain in production.
+   SECURITY: CORS
 ---------------------------------------------------------- */
-const ALLOWED_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:5173";
+const ALLOWED_ORIGIN =
+  process.env.CORS_ORIGIN || "http://localhost:5173";
+
 app.use(
   cors({
     origin: ALLOWED_ORIGIN,
@@ -35,48 +28,38 @@ app.use(
 );
 
 /* ---------------------------------------------------------
-   SECURITY: Rate limiting — prevent abuse / DoS
-   100 requests per IP per 15-minute window.
+   SECURITY: Rate limiting
 ---------------------------------------------------------- */
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,                  // limit each IP
-  standardHeaders: true,     // Return rate limit info in RateLimit-* headers
-  legacyHeaders: false,      // Disable X-RateLimit-* headers
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: { error: "Too many requests — please try again later." },
 });
 app.use(limiter);
 
 /* ---------------------------------------------------------
-   SECURITY: Explicit JSON body size limit (10 KB)
-   Prevents oversized payloads from consuming memory.
+   SECURITY: JSON body limit
 ---------------------------------------------------------- */
 app.use(express.json({ limit: "10kb" }));
-
-/* ---------------------------------------------------------
-   ROOT ROUTE (Fixes "Cannot GET /")
----------------------------------------------------------- */
-app.get("/", (_req, res) => {
-  res.send("Predictive Maintenance API is running.");
-});
 
 /* ---------------------------------------------------------
    Simulated Risk Scoring Logic
 ---------------------------------------------------------- */
 
-// Allowed ranges for each sensor input (server-side enforcement)
 const INPUT_BOUNDS = {
-  temperature:   { min: -50,  max: 500   },
-  vibration:     { min: 0,    max: 100   },
-  runtime_hours: { min: 0,    max: 100000 },
-  pressure:      { min: 0,    max: 500   },
+  temperature: { min: -50, max: 500 },
+  vibration: { min: 0, max: 100 },
+  runtime_hours: { min: 0, max: 100000 },
+  pressure: { min: 0, max: 500 },
 };
 
 function computeRiskScore({
   temperature = 60,
   vibration = 2,
   runtime_hours = 500,
-  pressure = 30
+  pressure = 30,
 }) {
   const IDEAL_TEMP = 55;
   const IDEAL_VIBRATION = 1.5;
@@ -106,56 +89,51 @@ function computeRiskScore({
 }
 
 /* ---------------------------------------------------------
-   HEALTH CHECK (sanitised — no internal details leaked)
+   API ROUTES
 ---------------------------------------------------------- */
+
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-/* ---------------------------------------------------------
-   GET /predict (demo endpoint for browser testing)
----------------------------------------------------------- */
 app.get("/predict", (_req, res) => {
   const { score, risk_level } = computeRiskScore({});
   res.json({
     score,
     risk_level,
     timestamp: new Date().toISOString(),
-    demo: true
+    demo: true,
   });
 });
 
-/* ---------------------------------------------------------
-   POST /predict (for frontend integration)
-   SECURITY: validates type, finiteness, AND range bounds
----------------------------------------------------------- */
 app.post("/predict", (req, res) => {
   try {
     const { temperature, vibration, runtime_hours, pressure } = req.body;
 
     const inputs = {
-      temperature: temperature !== undefined ? Number(temperature) : undefined,
-      vibration: vibration !== undefined ? Number(vibration) : undefined,
-      runtime_hours: runtime_hours !== undefined ? Number(runtime_hours) : undefined,
+      temperature:
+        temperature !== undefined ? Number(temperature) : undefined,
+      vibration:
+        vibration !== undefined ? Number(vibration) : undefined,
+      runtime_hours:
+        runtime_hours !== undefined ? Number(runtime_hours) : undefined,
       pressure: pressure !== undefined ? Number(pressure) : undefined,
     };
 
-    // Validate type — must be a finite number
     for (const [key, val] of Object.entries(inputs)) {
       if (val !== undefined && !Number.isFinite(val)) {
         return res.status(400).json({
-          error: `Invalid value for "${key}": must be a number.`
+          error: `Invalid value for "${key}": must be a number.`,
         });
       }
     }
 
-    // Validate range — must be within allowed bounds
     for (const [key, val] of Object.entries(inputs)) {
       if (val !== undefined && key in INPUT_BOUNDS) {
         const { min, max } = INPUT_BOUNDS[key];
         if (val < min || val > max) {
           return res.status(400).json({
-            error: `"${key}" must be between ${min} and ${max}. Received: ${val}`
+            error: `"${key}" must be between ${min} and ${max}. Received: ${val}`,
           });
         }
       }
@@ -167,9 +145,8 @@ app.post("/predict", (req, res) => {
       score,
       risk_level,
       timestamp: new Date().toISOString(),
-      inputs
+      inputs,
     });
-
   } catch (err) {
     console.error("Prediction error:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -177,32 +154,36 @@ app.post("/predict", (req, res) => {
 });
 
 /* ---------------------------------------------------------
-   404 — Catch-all for undefined routes
+   SERVE FRONTEND (VITE BUILD)
 ---------------------------------------------------------- */
-app.use((_req, res) => {
-  res.status(404).json({ error: "Route not found" });
+
+const frontendPath = path.join(__dirname, "dist");
+
+app.use(express.static(frontendPath));
+
+app.get("*", (req, res, next) => {
+  // If request starts with /predict or /health, skip
+  if (req.path.startsWith("/predict") || req.path.startsWith("/health")) {
+    return next();
+  }
+
+  res.sendFile(path.join(frontendPath, "index.html"));
 });
 
 /* ---------------------------------------------------------
-   Global error-handling middleware
-   (must have 4 parameters so Express treats it as an
-    error handler, not a regular middleware)
+   GLOBAL ERROR HANDLER
 ---------------------------------------------------------- */
-// eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
-  // Malformed JSON bodies from express.json()
   if (err.type === "entity.parse.failed") {
     return res.status(400).json({ error: "Malformed JSON in request body" });
   }
 
-  // Payload too large (exceeds 10kb limit)
   if (err.type === "entity.too.large") {
     return res.status(413).json({ error: "Request body too large" });
   }
 
   console.error("Unhandled error:", err.stack || err);
 
-  // Never leak internal details in production
   res.status(err.status || 500).json({
     error:
       process.env.NODE_ENV === "production"
@@ -212,22 +193,19 @@ app.use((err, _req, res, _next) => {
 });
 
 /* ---------------------------------------------------------
-   Process-level safety nets
-   Prevent unhandled exceptions / rejections from crashing
-   the server.  In production you'd want a process manager
-   (pm2, systemd, etc.) to restart on truly fatal errors.
+   PROCESS SAFETY NETS
 ---------------------------------------------------------- */
 process.on("uncaughtException", (err) => {
-  console.error("Uncaught Exception — keeping server alive:", err.stack || err);
+  console.error("Uncaught Exception:", err.stack || err);
 });
 
 process.on("unhandledRejection", (reason) => {
-  console.error("Unhandled Rejection — keeping server alive:", reason);
+  console.error("Unhandled Rejection:", reason);
 });
 
 /* ---------------------------------------------------------
    START SERVER
 ---------------------------------------------------------- */
 app.listen(PORT, () => {
-  console.log(`Predictive Maintenance API running on http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
